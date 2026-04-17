@@ -1,0 +1,28 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target = <&spi0>;
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            // 1. 停用原本的 spidev
+            spidev@0 {
+                status = "disabled";
+            };
+
+            // 2. 加入你的 POV 驅動
+            pov_apa102@0 {
+                // 這個字串非常重要，驅動程式靠它來相認
+                compatible = "custom,pov_apa102"; 
+                reg = <0>; /* 代表使用 CE0 (Chip Select 0) */
+                spi-max-frequency = <15000000>; /* 15 MHz */
+            };
+        };
+    };
+};
