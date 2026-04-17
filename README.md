@@ -1,3 +1,6 @@
+### 專案架構 (Project Structure)
+
+```text
 pov_display_project/
 ├── .gitignore               # 忽略編譯產生的暫存檔 (如 .o, .ko, 執行檔)
 ├── README.md                # 專題首頁介紹 (放系統架構圖、展示影片連結)
@@ -26,14 +29,15 @@ pov_display_project/
 ├── hardware/                # 硬體層: 實體配置與硬體描述
 │   ├── dts/                 # Device Tree Source (.dts)
 │   │   └── pov-overlay.dts  # 註冊 GPIO 中斷與 SPI 的設備樹疊加層
-│   ├── pcb/                 # (可選) 電路板設計檔 (KiCad 或 Altium 專案)
-│   └── mech/                # (可選) 機構設計檔 (旋轉臂 3D 列印 .stl 檔)
+│   ├── pcb/                 # 電路板設計檔 (KiCad 或 Altium 專案)
+│   └── mech/                # 機構設計檔 (旋轉臂 3D 列印 .stl 檔)
 │
 ├── scripts/                 # 自動化腳本 (開發與部屬工具)
 │   ├── deploy.sh            # 一鍵將 .ko 載入核心並啟動遊戲的腳本
-│   └── setup_rt_env.sh      # (可選) 記錄如何設定 PREEMPT_RT 環境的腳本
+│   └── setup_rt_env.sh      # 記錄如何設定 PREEMPT_RT 環境的腳本
 │
 └── docs/                    # 專題文件與報告
     ├── architecture.png     # 系統架構圖
     ├── latency_test.png     # cyclictest 的效能延遲圖表
     └── api_reference.md     # 說明 /dev/pov_display 接收的陣列格式
+```
