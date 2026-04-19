@@ -28,7 +28,8 @@ static ktime_t last_trigger_time;
 // 單位是奈秒 (ns)。5,000,000 ns = 5 毫秒 (ms)
 // 根據馬達的實際最高轉速來微調
 // #define DEBOUNCE_TIME_NS 5000000
-#define DEBOUNCE_TIME_NS 1000000000 // 1 sec
+// #define DEBOUNCE_TIME_NS 1000000000 // 1 sec
+#define DEBOUNCE_TIME_NS 10000000 // 10 ms
 
 static int __init mag_driver_init(void);
 static void __exit mag_driver_exit(void);
@@ -95,6 +96,25 @@ static ssize_t mag_write(struct file *filp, const char __user *buf, size_t len, 
     return 0;
 }
 
+// 2. 宣告一個全域的函式指標，用來存儲 POV 驅動傳進來的函式
+static void (*pov_sync_callback)(ktime_t current_time, s64 time_diff_ns) = NULL;
+
+// 3. 提供註冊函式 (給 POV 驅動呼叫)
+void register_mag_callback(void (*callback_func)(ktime_t, s64))
+{
+    pov_sync_callback = callback_func;
+    pr_info("Magnet Driver: Callback registered successfully.\n");
+}
+EXPORT_SYMBOL(register_mag_callback); // 把這個函式開放給整個 Kernel
+
+// 4. 提供解除註冊函式
+void unregister_mag_callback(void)
+{
+    pov_sync_callback = NULL;
+    pr_info("Magnet Driver: Callback unregistered.\n");
+}
+EXPORT_SYMBOL(unregister_mag_callback);
+
 static irqreturn_t mag_isr(int irq, void *data)
 {
     // 1. 獲取當下的高精度時間
@@ -109,7 +129,13 @@ static irqreturn_t mag_isr(int irq, void *data)
     }
 
     last_trigger_time = now;
-    pr_info("magnetic interrupt !!!!\n");
+    // pr_info("magnetic interrupt !!!!\n");
+
+    // 如果有註冊 Callback 就呼叫
+    if (pov_sync_callback != NULL) {
+        pov_sync_callback(now, time_diff_ns);
+    }
+
     return IRQ_HANDLED;
 }
 
@@ -205,8 +231,8 @@ r_unreg:
 
 static void __exit mag_driver_exit(void)
 {
-    gpio_free(GPIO_DO);
     free_irq(mag_irq, NULL);
+    gpio_free(GPIO_DO);
     device_destroy(dev_class, dev);
     class_destroy(dev_class);
     cdev_del(&my_cdev);

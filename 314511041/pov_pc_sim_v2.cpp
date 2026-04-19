@@ -10,7 +10,7 @@
 #include <opencv2/imgproc.hpp>
 
 #define NUM_SLICES 360
-#define LED_NUM 30
+#define LED_NUM 20
 
 // 解決 MAX/MIN 巨集重複定義警告
 #undef MAX
@@ -217,7 +217,8 @@ int main(int argc, char** argv) {
         // cv::imshow("Original Cropped", frame_cropped);
 
         // 控制播放速度，按 'q' 退出
-        char key = (char)cv::waitKey(10); 
+        // char key = (char)cv::waitKey(10); 
+        char key = (char)cv::waitKey(1);
         if (key == 'q' || key == 27) break;
     }
 

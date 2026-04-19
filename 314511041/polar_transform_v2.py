@@ -8,7 +8,7 @@ if img is None:
     exit()
 
 
-led_num = 29
+led_num = 20
 num_slices = 360
 
 
