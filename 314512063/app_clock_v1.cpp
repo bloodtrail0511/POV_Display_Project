@@ -2,6 +2,8 @@
 #include <stdint.h>     // uint8_t：固定 8-bit 的無號整數，適合存放影像 RGB/BGR 顏色值
 #include <math.h>       // sin(), cos(), M_PI 等數學函式
 #include <time.h>       // time(), localtime_s()/localtime()：取得目前系統時間
+#include <array>
+#include <string>
 
 #include <opencv2/opencv.hpp>   // OpenCV 主要功能
 #include <opencv2/highgui.hpp>  // 視窗顯示：namedWindow(), imshow(), waitKey()
@@ -13,7 +15,7 @@
 
 // 單側 LED 數量。
 // 程式中會模擬一條穿過圓心的 LED 臂，因此實際取樣點數為 LED_NUM * 2。
-#define LED_NUM 24
+#define LED_NUM 20
 
 // 避免 Windows 標頭或其他函式庫已經定義 MAX/MIN，先取消後重新定義。
 #undef MAX
@@ -152,6 +154,77 @@ void simulate_pov_display(const POV_Frame& buffer, cv::Mat& display_canvas) {
     cv::circle(display_canvas, cv::Point(sim_center, sim_h - 10), 5, cv::Scalar(0, 0, 255), -1);
 }
 
+std::array<std::string, 7> glyph_pattern(char ch) {
+    switch (ch) {
+    case '0':
+        return {"01110", "10001", "10011", "10101", "11001", "10001", "01110"};
+    case '1':
+        return {"00100", "01100", "00100", "00100", "00100", "00100", "01110"};
+    case '2':
+        return {"01110", "10001", "00001", "00010", "00100", "01000", "11111"};
+    case '3':
+        return {"11110", "00001", "00001", "01110", "00001", "00001", "11110"};
+    case '4':
+        return {"00010", "00110", "01010", "10010", "11111", "00010", "00010"};
+    case '5':
+        return {"11111", "10000", "10000", "11110", "00001", "00001", "11110"};
+    case '6':
+        return {"01111", "10000", "10000", "11110", "10001", "10001", "01110"};
+    case '7':
+        return {"11111", "00001", "00010", "00100", "01000", "01000", "01000"};
+    case '8':
+        return {"01110", "10001", "10001", "01110", "10001", "10001", "01110"};
+    case '9':
+        return {"01110", "10001", "10001", "01111", "00001", "00001", "11110"};
+    default:
+        return {"00000", "00000", "00000", "00000", "00000", "00000", "00000"};
+    }
+}
+
+cv::Size block_text_size(const std::string& text, int cell_size) {
+    int char_gap = cell_size;
+    int width = 0;
+    for (size_t i = 0; i < text.size(); i++) {
+        width += 5 * cell_size;
+        if (i + 1 < text.size()) {
+            width += char_gap;
+        }
+    }
+    return cv::Size(width, 7 * cell_size);
+}
+
+void draw_block_text(
+    cv::Mat& canvas,
+    const std::string& text,
+    cv::Point center,
+    int cell_size,
+    cv::Scalar color
+) {
+    cv::Size total = block_text_size(text, cell_size);
+    int char_gap = cell_size;
+    int pixel_gap = MAX(2, cell_size / 8);
+    int x = center.x - total.width / 2;
+    int y = center.y - total.height / 2;
+
+    for (char ch : text) {
+        std::array<std::string, 7> glyph = glyph_pattern(ch);
+        for (int row = 0; row < 7; row++) {
+            for (int col = 0; col < 5; col++) {
+                if (glyph[row][col] == '1') {
+                    cv::Rect block(
+                        x + col * cell_size,
+                        y + row * cell_size,
+                        cell_size - pixel_gap,
+                        cell_size - pixel_gap
+                    );
+                    cv::rectangle(canvas, block, color, cv::FILLED, cv::LINE_8);
+                }
+            }
+        }
+        x += 5 * cell_size + char_gap;
+    }
+}
+
 // 繪製時鐘的固定背景：黑底、外圈、中心點，以及 1 到 12 的數字。
 void draw_clock_numbers(cv::Mat& canvas) {
     canvas = cv::Scalar(0, 0, 0); // 清空畫布為黑色
@@ -159,10 +232,11 @@ void draw_clock_numbers(cv::Mat& canvas) {
     int center_x = canvas.cols / 2;
     int center_y = canvas.rows / 2;
     int number_radius = (int)(canvas.cols * 0.39); // 數字所在圓周的半徑
+    double size_scale = canvas.cols / 1200.0;
 
     // 畫時鐘外圈與中心基準點。
-    cv::circle(canvas, cv::Point(center_x, center_y), number_radius + 55, cv::Scalar(35, 35, 35), 6, cv::LINE_AA);
-    cv::circle(canvas, cv::Point(center_x, center_y), 6, cv::Scalar(80, 80, 80), -1, cv::LINE_AA);
+    cv::circle(canvas, cv::Point(center_x, center_y), number_radius + (int)(55 * size_scale), cv::Scalar(35, 35, 35), (int)(8 * size_scale), cv::LINE_AA);
+    cv::circle(canvas, cv::Point(center_x, center_y), (int)(7 * size_scale), cv::Scalar(80, 80, 80), -1, cv::LINE_AA);
 
     for (int hour = 1; hour <= 12; hour++) {
         // 一個小時對應 30 度，12 小時剛好 360 度。
@@ -178,42 +252,8 @@ void draw_clock_numbers(cv::Mat& canvas) {
         char label[3];
         snprintf(label, sizeof(label), "%d", hour); // 將 hour 轉成字串
 
-        // 10、11、12 是兩位數，因此字體稍微縮小，避免太寬。
-        double font_scale = (hour >= 10) ? 2.1 : 2.5;
-        int thickness = 6;
-        int baseline = 0;
-
-        // 取得文字尺寸，方便把文字中心對齊到計算出的座標。
-        cv::Size text_size = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, font_scale, thickness, &baseline);
-
-        cv::Point text_origin(
-            x - text_size.width / 2,
-            y + text_size.height / 2
-        );
-
-        // 先畫一層深色粗字，作為外框或陰影，增加數字在 POV 模擬中的辨識度。
-        cv::putText(
-            canvas,
-            label,
-            text_origin,
-            cv::FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            cv::Scalar(30, 30, 30),
-            thickness + 4,
-            cv::LINE_AA
-        );
-
-        // 再畫白色數字本體。
-        cv::putText(
-            canvas,
-            label,
-            text_origin,
-            cv::FONT_HERSHEY_SIMPLEX,
-            font_scale,
-            cv::Scalar(255, 255, 255),
-            thickness,
-            cv::LINE_AA
-        );
+        int cell_size = (int)((hour >= 10 ? 15 : 18) * size_scale);
+        draw_block_text(canvas, label, cv::Point(x, y), cell_size, cv::Scalar(255, 255, 255));
     }
 }
 
@@ -260,18 +300,19 @@ void draw_clock_hands(cv::Mat& canvas) {
     cv::Point second_tip = endpoint(second_angle, 0.84); // 秒針較長
 
     // 依序畫出時針、分針、秒針。
-    cv::line(canvas, center, hour_tip, cv::Scalar(255, 255, 255), 18, cv::LINE_AA);
-    cv::line(canvas, center, minute_tip, cv::Scalar(220, 220, 220), 10, cv::LINE_AA);
-    cv::line(canvas, center, second_tip, cv::Scalar(80, 80, 255), 4, cv::LINE_AA);
+    double size_scale = canvas.cols / 1200.0;
+    cv::line(canvas, center, hour_tip, cv::Scalar(255, 255, 255), (int)(20 * size_scale), cv::LINE_AA);
+    cv::line(canvas, center, minute_tip, cv::Scalar(220, 220, 220), (int)(12 * size_scale), cv::LINE_AA);
+    cv::line(canvas, center, second_tip, cv::Scalar(80, 80, 255), (int)(5 * size_scale), cv::LINE_AA);
 
     // 畫中心圓點，蓋住三根指針交會處，使畫面較整潔。
-    cv::circle(canvas, center, 14, cv::Scalar(230, 230, 230), -1, cv::LINE_AA);
-    cv::circle(canvas, center, 6, cv::Scalar(80, 80, 255), -1, cv::LINE_AA);
+    cv::circle(canvas, center, (int)(16 * size_scale), cv::Scalar(230, 230, 230), -1, cv::LINE_AA);
+    cv::circle(canvas, center, (int)(7 * size_scale), cv::Scalar(80, 80, 255), -1, cv::LINE_AA);
 }
 
 int main() {
     // 原始時鐘畫布大小。畫布越大，取樣後的 POV 畫面越細緻。
-    int side_len = 1200;
+    int side_len = 1800;
 
     // 程式開始時先建立取樣查表。
     // 因為 side_len 固定，所以 LUT 只需要建立一次。
@@ -292,7 +333,7 @@ int main() {
     cv::namedWindow("1. Clock Canvas", cv::WINDOW_AUTOSIZE);
     cv::namedWindow("2. POV Simulator", cv::WINDOW_AUTOSIZE);
 
-    printf("Clock demo started. Press 'q' or ESC to exit.\n");
+    printf("Clock demo started. Press Down, 'q', or ESC to exit.\n");
 
     // 主迴圈：不斷更新時間、轉換成 POV buffer、顯示模擬結果。
     while (1) {
@@ -314,8 +355,9 @@ int main() {
 
         // waitKey(16) 約等於每 16 ms 更新一次，接近 60 FPS。
         // 若按 q 或 ESC，就結束程式。
-        int key = cv::waitKey(16);
-        if (key == 'q' || key == 27) {
+        int key = cv::waitKeyEx(16);
+        bool down_key = key == 2621440 || key == 84;
+        if (down_key || key == 'q' || key == 27) {
             break;
         }
     }
