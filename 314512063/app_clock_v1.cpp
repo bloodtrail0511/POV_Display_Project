@@ -9,6 +9,14 @@
 #include <opencv2/highgui.hpp>  // 視窗顯示：namedWindow(), imshow(), waitKey()
 #include <opencv2/imgproc.hpp>  // 影像繪圖：circle(), line(), putText()
 
+// app_clock_v1.cpp 是 POV 時鐘功能。
+// 它可以獨立執行，也可以由 menu.cpp 的 run_clock_app() 透過 system("./app_clock_v1") 啟動。
+// 程式流程：
+// 1. 用 OpenCV 畫出完整 2D 時鐘畫面。
+// 2. 將 2D 畫面轉成 POV_Frame，模擬一條旋轉 LED 臂在不同角度的顏色資料。
+// 3. 再把 POV_Frame 重建成畫面，讓使用者在電腦上預覽 POV 顯示效果。
+// 4. 按 Down/S/q/ESC 結束本程式；若是從 menu 啟動，結束後會回到 menu.cpp。
+
 // POV 模擬時，把一圈切成 360 個角度切片。
 // 可以理解成旋轉手臂每轉一圈，取樣 360 個角度位置。
 #define NUM_SLICES 360
@@ -336,6 +344,8 @@ int main() {
     printf("Clock demo started. Press Down, 'q', or ESC to exit.\n");
 
     // 主迴圈：不斷更新時間、轉換成 POV buffer、顯示模擬結果。
+    // 若本程式是由 menu.cpp 啟動，跳出這個迴圈並 return 0 後，
+    // menu.cpp 的 run_clock_app() 就會繼續執行，重新打開選單視窗。
     while (1) {
         // 先畫固定的時鐘背景與數字。
         draw_clock_numbers(game_canvas);
@@ -353,10 +363,12 @@ int main() {
         cv::imshow("1. Clock Canvas", game_canvas);
         cv::imshow("2. POV Simulator", simulation_canvas);
 
-        // waitKey(16) 約等於每 16 ms 更新一次，接近 60 FPS。
-        // 若按 q 或 ESC，就結束程式。
+        // waitKeyEx(16) 約等於每 16 ms 更新一次，接近 60 FPS。
+        // 方向鍵在 Windows/Linux 不同 OpenCV 後端會有不同 key code，
+        // 所以下鍵同時支援 Windows、Linux、部分 OpenCV 後端，以及 S/s 備用鍵。
+        // 按 Down/S/q/ESC 會結束 clock，讓 menu.cpp 可以重新取得控制權。
         int key = cv::waitKeyEx(16);
-        bool down_key = key == 2621440 || key == 84;
+        bool down_key = key == 2621440 || key == 84 || key == 65364 || key == 's' || key == 'S';
         if (down_key || key == 'q' || key == 27) {
             break;
         }

@@ -3,7 +3,6 @@ build_menu_local.ps1
 run_menu_local.ps1
 $null
 *.dll
-*.exe
-*.obj
 *.pdb
 *.ilk
+.vscode/

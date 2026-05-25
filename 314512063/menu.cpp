@@ -11,6 +11,13 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/opencv.hpp>
 
+// menu.cpp 是整個 POV 模擬程式的入口選單。
+// 功能流程：
+// 1. 先用 OpenCV 畫出選單畫面。
+// 2. 把選單畫面轉成 POV_Frame，模擬旋轉 LED 顯示效果。
+// 3. 讀取鍵盤輸入，左右切換選項，上鍵確認，下鍵返回主選單。
+// 4. 若選到 CLK，會執行 app_clock_v1；VID/GAME 目前保留為之後擴充。
+
 #define NUM_SLICES 360
 #define LED_NUM 20
 
@@ -22,9 +29,15 @@ typedef struct POV_Frame {
     uint8_t data[NUM_SLICES][LED_NUM * 2][3];
 } POV_Frame;
 
+// lut_x/lut_y 是 POV 取樣查表。
+// 每個角度切片、每顆 LED 要從原始 2D 畫布的哪個像素取樣，都先算好存在這裡。
 int lut_x[NUM_SLICES][LED_NUM * 2];
 int lut_y[NUM_SLICES][LED_NUM * 2];
 
+// 選單目前的狀態。
+// MainMenu：一般選單畫面。
+// ClockSelected / VideoSelected / GameSelected：用來顯示某個選項已被選取。
+// 若未來新增功能，通常會在這裡新增新的狀態，例如 ImageSelected。
 enum class MenuState {
     MainMenu,
     ClockSelected,
@@ -33,12 +46,18 @@ enum class MenuState {
 };
 
 struct MenuContext {
-    MenuState state = MenuState::MainMenu;
-    int selected_index = 0;
-    int blink_tick = 0;
+    MenuState state = MenuState::MainMenu; // 畫面目前顯示的狀態
+    int selected_index = 0;                // 目前游標指向的選項 index，0=CLK、1=VID、2=GAME
+    int blink_tick = 0;                    // 控制選取項目閃爍的計數器
+
+    // 選單文字標籤。
+    // 若未來要新增 menu 功能，除了擴充陣列大小，也要同步修改 label_positions、
+    // move_selection() 的選項數量，以及 confirm_selection() 的對應動作。
     std::array<std::string, 3> labels = {"CLK", "VID", "GAME"};
 };
 
+// 建立 POV 取樣查表。
+// menu 畫面和 clock 畫面都使用同樣的取樣邏輯：先畫完整 2D 圖，再轉成旋轉 LED 的資料格式。
 void init_sampling_lut(int side_len) {
     int center = side_len / 2;
     float r_step = (float)center / LED_NUM;
@@ -64,6 +83,8 @@ void init_sampling_lut(int side_len) {
     }
 }
 
+// 將 OpenCV Mat 畫布轉成 POV_Frame。
+// 後續 simulate_pov_display() 會再把這份資料畫成 POV 模擬畫面。
 void convert_to_pov_buffer(const cv::Mat& frame_cropped, POV_Frame* buffer) {
     const uint8_t* raw_pixels = frame_cropped.data;
     int step = (int)frame_cropped.step;
@@ -79,6 +100,7 @@ void convert_to_pov_buffer(const cv::Mat& frame_cropped, POV_Frame* buffer) {
     }
 }
 
+// 使用 POV_Frame 重建視覺效果，模擬真實旋轉 LED 看到的結果。
 void simulate_pov_display(const POV_Frame& buffer, cv::Mat& display_canvas) {
     display_canvas = cv::Scalar(0, 0, 0);
 
@@ -121,6 +143,8 @@ void simulate_pov_display(const POV_Frame& buffer, cv::Mat& display_canvas) {
     cv::circle(display_canvas, cv::Point(sim_center, sim_h - 10), 5, cv::Scalar(0, 0, 255), -1);
 }
 
+// 用 OpenCV 內建字型畫置中文字。
+// 目前主要保留作為一般文字工具，選單大字則使用下方的 5x7 方塊字。
 void draw_centered_text(
     cv::Mat& canvas,
     const std::string& text,
@@ -136,6 +160,8 @@ void draw_centered_text(
     cv::putText(canvas, text, origin, font_face, font_scale, color, thickness, cv::LINE_AA);
 }
 
+// 5x7 方塊字型表。
+// 選單標籤只支援這裡列出的英文字母；新增新標籤時若出現新字母，要在這裡補 pattern。
 std::array<std::string, 7> glyph_pattern(char ch) {
     switch (ch) {
     case 'A':
@@ -171,6 +197,7 @@ std::array<std::string, 7> glyph_pattern(char ch) {
     }
 }
 
+// 計算一段 5x7 方塊字在指定 cell_size 下的總寬高。
 cv::Size block_text_size(const std::string& text, int cell_size) {
     int char_gap = cell_size;
     int width = 0;
@@ -183,6 +210,7 @@ cv::Size block_text_size(const std::string& text, int cell_size) {
     return cv::Size(width, 7 * cell_size);
 }
 
+// 實際把 5x7 方塊字畫到 OpenCV 畫布上。
 void draw_block_text(
     cv::Mat& canvas,
     const std::string& text,
@@ -215,6 +243,8 @@ void draw_block_text(
     }
 }
 
+// 畫出單一 menu 選項。
+// selected=true 且 blink_on=true 時，會用黑底白字做閃爍效果。
 void draw_menu_label(
     cv::Mat& canvas,
     const std::string& text,
@@ -239,6 +269,8 @@ void draw_menu_label(
     }
 }
 
+// 顯示某個功能被選取的提示文字。
+// 目前 VID/GAME 尚未連到外部程式，所以會停在這個提示狀態。
 void draw_selected_message(cv::Mat& canvas, const std::string& label) {
     int center_x = canvas.cols / 2;
     int center_y = canvas.rows / 2;
@@ -247,6 +279,8 @@ void draw_selected_message(cv::Mat& canvas, const std::string& label) {
     draw_block_text(canvas, "SELECTED", cv::Point(center_x, center_y + 335), 15, cv::Scalar(0, 0, 0));
 }
 
+// 產生完整 menu 的 2D 原始畫面。
+// 若未來新增選項，label_positions 的位置數量也要跟著調整。
 void draw_menu_canvas(cv::Mat& canvas, const MenuContext& menu) {
     canvas = cv::Scalar(255, 255, 255);
 
@@ -278,10 +312,17 @@ void draw_menu_canvas(cv::Mat& canvas, const MenuContext& menu) {
     }
 }
 
+// 左右鍵切換選單項目。
+// 目前共有 3 個選項，所以用 +3 和 %3 讓 index 在 0、1、2 之間循環。
+// 若新增第 4 個選項，這裡的 3 要改成新的選項數量。
 void move_selection(MenuContext& menu, int delta) {
     menu.selected_index = (menu.selected_index + delta + 3) % 3;
 }
 
+// ===== 功能連結點：CLK 選項 =====
+// 這裡負責從 menu 連到時鐘功能。
+// menu 會先關閉自己的 OpenCV 視窗，再用 system() 執行 app_clock_v1。
+// app_clock_v1 結束後，控制權回到這個函式，並重新建立 menu 視窗。
 void run_clock_app() {
     cv::destroyAllWindows();
 #ifdef _WIN32
@@ -298,26 +339,75 @@ void run_clock_app() {
     cv::resizeWindow("2. POV Simulator", 520, 520);
 }
 
+// ===== 功能連結點：GAME/Pong 選項 =====
+// 這裡負責從 menu 連到 Pong 功能。
+// 若未來 GAME 想換成別的遊戲，主要就是改這個函式執行的程式名稱。
+void run_pong_app() {
+    cv::destroyAllWindows();
+#ifdef _WIN32
+    int result = std::system("app_pong_sim.exe");
+#else
+    int result = std::system("./app_pong_sim");
+#endif
+    if (result != 0) {
+        printf("Failed to run pong app. Please build app_pong_sim first.\n");
+    }
+    cv::namedWindow("1. Menu Canvas", cv::WINDOW_NORMAL);
+    cv::namedWindow("2. POV Simulator", cv::WINDOW_NORMAL);
+    cv::resizeWindow("1. Menu Canvas", 600, 600);
+    cv::resizeWindow("2. POV Simulator", 520, 520);
+}
+
+// ===== 功能連結點：VID 選項 =====
+// 這裡負責從 menu 連到 GIF/影片播放功能。
+// app_vid 目前會讀取同資料夾下的 pac_man.gif，並投影到 POV 模擬畫面。
+void run_video_app() {
+    cv::destroyAllWindows();
+#ifdef _WIN32
+    int result = std::system("app_vid.exe");
+#else
+    int result = std::system("./app_vid");
+#endif
+    if (result != 0) {
+        printf("Failed to run video app. Please build app_vid first and check pac_man.gif.\n");
+    }
+    cv::namedWindow("1. Menu Canvas", cv::WINDOW_NORMAL);
+    cv::namedWindow("2. POV Simulator", cv::WINDOW_NORMAL);
+    cv::resizeWindow("1. Menu Canvas", 600, 600);
+    cv::resizeWindow("2. POV Simulator", 520, 520);
+}
+
+// ===== 功能連結總入口 =====
+// 按下確認鍵時會進到這裡。
+// 未來若要新增 menu 功能，通常要改三個地方：
+// 1. MenuContext::labels：新增畫面上的文字。
+// 2. draw_menu_canvas()：新增選項位置。
+// 3. confirm_selection()：在這裡把 selected_index 對應到新的功能函式。
 void confirm_selection(MenuContext& menu) {
     if (menu.selected_index == 0) {
         run_clock_app();
         menu.state = MenuState::MainMenu;
     } else if (menu.selected_index == 1) {
-        menu.state = MenuState::VideoSelected;
+        run_video_app();
+        menu.state = MenuState::MainMenu;
     } else {
-        menu.state = MenuState::GameSelected;
+        run_pong_app();
+        menu.state = MenuState::MainMenu;
     }
 }
 
+// 處理鍵盤輸入。
+// OpenCV 在 Windows/Linux 不同後端會回傳不同方向鍵代碼，所以這裡同時支援多組 key code。
+// A/D/W/S 是備用鍵，方便在方向鍵沒有被 OpenCV 視窗正確接收時操作。
 bool handle_key(MenuContext& menu, int key) {
     if (key < 0) {
         return true;
     }
 
-    const bool left_key = key == 2424832 || key == 81;
-    const bool up_key = key == 2490368 || key == 82;
-    const bool right_key = key == 2555904 || key == 83;
-    const bool down_key = key == 2621440 || key == 84;
+    const bool left_key = key == 2424832 || key == 81 || key == 65361 || key == 'a' || key == 'A';
+    const bool up_key = key == 2490368 || key == 82 || key == 65362 || key == 'w' || key == 'W';
+    const bool right_key = key == 2555904 || key == 83 || key == 65363 || key == 'd' || key == 'D';
+    const bool down_key = key == 2621440 || key == 84 || key == 65364 || key == 's' || key == 'S';
 
     if (key == 'q' || key == 'Q' || key == 27) {
         return false;
@@ -347,11 +437,17 @@ bool handle_key(MenuContext& menu, int key) {
 }
 
 int main() {
+    // menu 原始畫布大小。畫布越大，轉成 POV 後取樣越細緻。
     int side_len = 1800;
+
+    // 先建立取樣查表，之後每一幀都重複使用。
     init_sampling_lut(side_len);
 
     MenuContext menu;
     POV_Frame pov_buffer;
+
+    // menu_canvas 是完整的 2D 選單畫面。
+    // simulation_canvas 是轉成 POV_Frame 後重建出的 POV 模擬畫面。
     cv::Mat menu_canvas = cv::Mat::zeros(side_len, side_len, CV_8UC3);
 
     float r_step_sim = 11.0f;
@@ -369,6 +465,11 @@ int main() {
     while (running) {
         menu.blink_tick++;
 
+        // 每一幀的流程：
+        // 1. 畫出 2D menu。
+        // 2. 轉成 POV buffer。
+        // 3. 產生 POV 模擬畫面。
+        // 4. 顯示視窗並讀取鍵盤。
         draw_menu_canvas(menu_canvas, menu);
         convert_to_pov_buffer(menu_canvas, &pov_buffer);
         simulate_pov_display(pov_buffer, simulation_canvas);
