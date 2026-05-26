@@ -1,0 +1,8 @@
+build/
+build_menu_local.ps1
+run_menu_local.ps1
+$null
+*.dll
+*.pdb
+*.ilk
+.vscode/
