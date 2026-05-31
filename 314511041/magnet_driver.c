@@ -29,7 +29,12 @@ static ktime_t last_trigger_time;
 // 根據馬達的實際最高轉速來微調
 // #define DEBOUNCE_TIME_NS 5000000
 // #define DEBOUNCE_TIME_NS 1000000000 // 1 sec
-#define DEBOUNCE_TIME_NS 10000000 // 10 ms
+// #define DEBOUNCE_TIME_NS 10000000 // 10 ms
+// #define DEBOUNCE_TIME_NS 80000000 // 20 ms
+#define MIN_VALID_PERIOD_NS 30000000LL  // 30 ms
+#define MAX_VALID_PERIOD_NS 100000000LL  // 100 ms
+// #define MIN_VALID_PERIOD_NS 95000000LL  // 95 ms
+// #define MAX_VALID_PERIOD_NS 135000000LL  // 135 ms
 
 static int __init mag_driver_init(void);
 static void __exit mag_driver_exit(void);
@@ -115,23 +120,53 @@ void unregister_mag_callback(void)
 }
 EXPORT_SYMBOL(unregister_mag_callback);
 
+// static irqreturn_t mag_isr(int irq, void *data)
+// {
+//     // 1. 獲取當下的高精度時間
+//     ktime_t now = ktime_get();
+
+//     // 2. 計算與上一次觸發的時間差 (轉換為奈秒)
+//     s64 time_diff_ns = ktime_to_ns(ktime_sub(now, last_trigger_time));
+
+//     // 3. 防彈跳判斷：如果時間差小於設定的冷卻時間，視為雜訊
+//     if (time_diff_ns < DEBOUNCE_TIME_NS) {
+//         return IRQ_HANDLED; // 直接結束，什麼都不做
+//     }
+
+//     last_trigger_time = now;
+//     // pr_info("magnetic interrupt !!!!\n");
+//     pr_info("Hall trigger, diff = %lld ns\n", time_diff_ns);
+
+//     // 如果有註冊 Callback 就呼叫
+//     if (pov_sync_callback != NULL) {
+//         pov_sync_callback(now, time_diff_ns);
+//     }
+    
+//     return IRQ_HANDLED;
+// }
 static irqreturn_t mag_isr(int irq, void *data)
 {
-    // 1. 獲取當下的高精度時間
     ktime_t now = ktime_get();
-
-    // 2. 計算與上一次觸發的時間差 (轉換為奈秒)
     s64 time_diff_ns = ktime_to_ns(ktime_sub(now, last_trigger_time));
 
-    // 3. 防彈跳判斷：如果時間差小於設定的冷卻時間，視為雜訊
-    if (time_diff_ns < DEBOUNCE_TIME_NS) {
-        return IRQ_HANDLED; // 直接結束，什麼都不做
+    if (time_diff_ns < MIN_VALID_PERIOD_NS) {
+        return IRQ_HANDLED;
+    }
+
+    if (time_diff_ns > MAX_VALID_PERIOD_NS) {
+        /*
+         * 太久沒收到合理觸發，可能馬達變慢或剛啟動。
+         * 這裡先更新 last_trigger_time，但不要 callback，
+         * 避免拿異常週期去改 POV timer。
+         */
+        last_trigger_time = now;
+        return IRQ_HANDLED;
     }
 
     last_trigger_time = now;
-    // pr_info("magnetic interrupt !!!!\n");
 
-    // 如果有註冊 Callback 就呼叫
+    pr_info("Valid Hall trigger, diff = %lld ns\n", time_diff_ns);
+
     if (pov_sync_callback != NULL) {
         pov_sync_callback(now, time_diff_ns);
     }
