@@ -11,12 +11,17 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/opencv.hpp>
 
+#include "app_clock_v1.hpp"
+#include "app_pong_sim.hpp"
+#include "app_vid.hpp"
+
 // menu.cpp 是整個 POV 模擬程式的入口選單。
 // 功能流程：
 // 1. 先用 OpenCV 畫出選單畫面。
 // 2. 把選單畫面轉成 POV_Frame，模擬旋轉 LED 顯示效果。
 // 3. 讀取鍵盤輸入，左右切換選項，上鍵確認，下鍵返回主選單。
-// 4. 若選到 CLK，會執行 app_clock_v1；VID/GAME 目前保留為之後擴充。
+// 4. 選到 CLK/VID/GAME 時，透過對應的 .hpp 入口函式啟動外部功能程式。
+//    功能程式結束後會重新建立 menu 視窗，讓使用者回到主選單。
 
 #define NUM_SLICES 360
 #define LED_NUM 20
@@ -34,10 +39,10 @@ typedef struct POV_Frame {
 int lut_x[NUM_SLICES][LED_NUM * 2];
 int lut_y[NUM_SLICES][LED_NUM * 2];
 
-// 選單目前的狀態。
+// 選單目前的畫面狀態。
 // MainMenu：一般選單畫面。
-// ClockSelected / VideoSelected / GameSelected：用來顯示某個選項已被選取。
-// 若未來新增功能，通常會在這裡新增新的狀態，例如 ImageSelected。
+// ClockSelected / VideoSelected / GameSelected：保留給需要先顯示「已選取」提示的流程。
+// 目前確認選項後會直接呼叫 app_clock_v1.hpp / app_vid.hpp / app_pong_sim.hpp 的功能入口。
 enum class MenuState {
     MainMenu,
     ClockSelected,
@@ -52,12 +57,12 @@ struct MenuContext {
 
     // 選單文字標籤。
     // 若未來要新增 menu 功能，除了擴充陣列大小，也要同步修改 label_positions、
-    // move_selection() 的選項數量，以及 confirm_selection() 的對應動作。
+    // move_selection() 的選項數量、confirm_selection() 的對應動作，以及新增功能的 .hpp。
     std::array<std::string, 3> labels = {"CLK", "VID", "GAME"};
 };
 
 // 建立 POV 取樣查表。
-// menu 畫面和 clock 畫面都使用同樣的取樣邏輯：先畫完整 2D 圖，再轉成旋轉 LED 的資料格式。
+// menu、clock、video、pong 都使用同樣的取樣概念：先畫完整 2D 圖，再轉成旋轉 LED 的資料格式。
 void init_sampling_lut(int side_len) {
     int center = side_len / 2;
     float r_step = (float)center / LED_NUM;
@@ -270,7 +275,7 @@ void draw_menu_label(
 }
 
 // 顯示某個功能被選取的提示文字。
-// 目前 VID/GAME 尚未連到外部程式，所以會停在這個提示狀態。
+// 目前確認選項後會直接啟動功能程式；這個函式保留給未來需要中間提示畫面的流程。
 void draw_selected_message(cv::Mat& canvas, const std::string& label) {
     int center_x = canvas.cols / 2;
     int center_y = canvas.rows / 2;
@@ -319,70 +324,12 @@ void move_selection(MenuContext& menu, int delta) {
     menu.selected_index = (menu.selected_index + delta + 3) % 3;
 }
 
-// ===== 功能連結點：CLK 選項 =====
-// 這裡負責從 menu 連到時鐘功能。
-// menu 會先關閉自己的 OpenCV 視窗，再用 system() 執行 app_clock_v1。
-// app_clock_v1 結束後，控制權回到這個函式，並重新建立 menu 視窗。
-void run_clock_app() {
-    cv::destroyAllWindows();
-#ifdef _WIN32
-    int result = std::system("app_clock_v1.exe");
-#else
-    int result = std::system("./app_clock_v1");
-#endif
-    if (result != 0) {
-        printf("Failed to run clock app. Please build app_clock_v1 first.\n");
-    }
-    cv::namedWindow("1. Menu Canvas", cv::WINDOW_NORMAL);
-    cv::namedWindow("2. POV Simulator", cv::WINDOW_NORMAL);
-    cv::resizeWindow("1. Menu Canvas", 600, 600);
-    cv::resizeWindow("2. POV Simulator", 520, 520);
-}
-
-// ===== 功能連結點：GAME/Pong 選項 =====
-// 這裡負責從 menu 連到 Pong 功能。
-// 若未來 GAME 想換成別的遊戲，主要就是改這個函式執行的程式名稱。
-void run_pong_app() {
-    cv::destroyAllWindows();
-#ifdef _WIN32
-    int result = std::system("app_pong_sim.exe");
-#else
-    int result = std::system("./app_pong_sim");
-#endif
-    if (result != 0) {
-        printf("Failed to run pong app. Please build app_pong_sim first.\n");
-    }
-    cv::namedWindow("1. Menu Canvas", cv::WINDOW_NORMAL);
-    cv::namedWindow("2. POV Simulator", cv::WINDOW_NORMAL);
-    cv::resizeWindow("1. Menu Canvas", 600, 600);
-    cv::resizeWindow("2. POV Simulator", 520, 520);
-}
-
-// ===== 功能連結點：VID 選項 =====
-// 這裡負責從 menu 連到 GIF/影片播放功能。
-// app_vid 目前會讀取同資料夾下的 pac_man.gif，並投影到 POV 模擬畫面。
-void run_video_app() {
-    cv::destroyAllWindows();
-#ifdef _WIN32
-    int result = std::system("app_vid.exe");
-#else
-    int result = std::system("./app_vid");
-#endif
-    if (result != 0) {
-        printf("Failed to run video app. Please build app_vid first and check pac_man.gif.\n");
-    }
-    cv::namedWindow("1. Menu Canvas", cv::WINDOW_NORMAL);
-    cv::namedWindow("2. POV Simulator", cv::WINDOW_NORMAL);
-    cv::resizeWindow("1. Menu Canvas", 600, 600);
-    cv::resizeWindow("2. POV Simulator", 520, 520);
-}
-
 // ===== 功能連結總入口 =====
 // 按下確認鍵時會進到這裡。
 // 未來若要新增 menu 功能，通常要改三個地方：
 // 1. MenuContext::labels：新增畫面上的文字。
 // 2. draw_menu_canvas()：新增選項位置。
-// 3. confirm_selection()：在這裡把 selected_index 對應到新的功能函式。
+// 3. 新增對應功能的 .hpp，並在 confirm_selection() 把 selected_index 對應到該入口函式。
 void confirm_selection(MenuContext& menu) {
     if (menu.selected_index == 0) {
         run_clock_app();
