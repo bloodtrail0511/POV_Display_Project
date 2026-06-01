@@ -6,3 +6,10 @@ $null
 *.pdb
 *.ilk
 .vscode/
+
+# Build outputs
+app_clock_v1
+app_pong_sim
+app_vid
+menu
+menu_v2
