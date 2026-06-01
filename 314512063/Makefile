@@ -4,6 +4,7 @@ OPENCV_CFLAGS := $(shell pkg-config --cflags opencv4)
 OPENCV_LIBS := $(shell pkg-config --libs opencv4)
 
 TARGETS := app_clock_v1 menu app_pong_sim app_vid
+MENU_HEADERS := app_clock_v1.hpp app_vid.hpp app_pong_sim.hpp menu_window.hpp
 
 .PHONY: all clean
 
@@ -12,7 +13,7 @@ all: $(TARGETS)
 app_clock_v1: app_clock_v1.cpp
 	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) $< -o $@ $(OPENCV_LIBS)
 
-menu: menu.cpp
+menu: menu.cpp $(MENU_HEADERS) app_clock_v1 app_vid app_pong_sim
 	$(CXX) $(CXXFLAGS) $(OPENCV_CFLAGS) $< -o $@ $(OPENCV_LIBS)
 
 app_pong_sim: app_pong_sim.cpp
