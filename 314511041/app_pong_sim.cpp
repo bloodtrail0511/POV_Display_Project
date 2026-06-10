@@ -9,8 +9,8 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
-#define NUM_SLICES 360
-#define LED_NUM 10
+#define NUM_SLICES 180
+#define LED_NUM 20 // 半邊20顆
 
 // 解決 MAX/MIN 巨集重複定義警告
 #undef MAX
