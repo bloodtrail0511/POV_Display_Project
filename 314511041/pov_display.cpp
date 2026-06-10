@@ -9,6 +9,8 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+#define POV_IOC_MAGIC 'p'
+#define POV_IOC_OFF   _IO(POV_IOC_MAGIC, 0)
 
 POVDisplay::POVDisplay() : POVDisplay(Config{}) {}
 
@@ -29,21 +31,54 @@ POVDisplay::~POVDisplay() {
     closeDevice();
 }
 
-bool POVDisplay::openDevice() {
-    closeDevice();
-    fd_ = ::open(cfg_.device_path.c_str(), O_WRONLY);
-    if (fd_ < 0) {
-        perror("POVDisplay: open device failed");
+bool POVDisplay::openDisplayDevice() {
+    closeDisplayDevice();
+
+    display_fd_ = ::open(cfg_.device_path.c_str(), O_WRONLY);
+    if (display_fd_ < 0) {
+        perror("POVDisplay: open pov_display_driver failed");
         return false;
     }
+
     return true;
 }
 
-void POVDisplay::closeDevice() {
-    if (fd_ >= 0) {
-        ::close(fd_);
-        fd_ = -1;
+bool POVDisplay::openMagnetDevice() {
+    closeMagnetDevice();
+
+    mag_fd_ = ::open(cfg_.magnet_path.c_str(), O_RDONLY);
+    if (mag_fd_ < 0) {
+        perror("POVDisplay: open magnet_driver failed");
+        return false;
     }
+
+    return true;
+}
+
+bool POVDisplay::openDevice() {
+    bool ok_display = openDisplayDevice();
+    bool ok_magnet = openMagnetDevice();
+
+    return ok_display && ok_magnet;
+}
+
+void POVDisplay::closeDisplayDevice() {
+    if (display_fd_ >= 0) {
+        ::close(display_fd_);
+        display_fd_ = -1;
+    }
+}
+
+void POVDisplay::closeMagnetDevice() {
+    if (mag_fd_ >= 0) {
+        ::close(mag_fd_);
+        mag_fd_ = -1;
+    }
+}
+
+void POVDisplay::closeDevice() {
+    closeDisplayDevice();
+    closeMagnetDevice();
 }
 
 int POVDisplay::clampInt(int v, int lo, int hi) {
@@ -252,9 +287,9 @@ bool POVDisplay::convert(const cv::Mat& bgr_canvas) {
 }
 
 bool POVDisplay::flush() {
-    if (fd_ < 0 && !openDevice()) return false;
+    if (display_fd_ < 0 && !openDisplayDevice()) return false;
 
-    ssize_t written = ::write(fd_, frame_.data(), frame_.size());
+    ssize_t written = ::write(display_fd_, frame_.data(), frame_.size());
     if (written != static_cast<ssize_t>(frame_.size())) {
         perror("POVDisplay: write failed or wrong length");
         return false;
@@ -281,4 +316,38 @@ bool POVDisplay::saveSampledPreview(const std::string& path) {
         }
     }
     return cv::imwrite(path, sim);
+}
+
+
+uint8_t POVDisplay::readHallCount() {
+    if (mag_fd_ < 0 && !openMagnetDevice()) {
+        last_hall_count_ = 0;
+        return 0;
+    }
+
+    uint8_t cnt = 0;
+    ssize_t n = ::read(mag_fd_, &cnt, 1);
+
+    if (n != 1) {
+        perror("POVDisplay: read hall count failed");
+        last_hall_count_ = 0;
+        return 0;
+    }
+
+    last_hall_count_ = cnt;
+    return cnt;
+}
+
+bool POVDisplay::off()
+{
+    if (display_fd_ < 0 && !openDisplayDevice()) {
+        return false;
+    }
+
+    if (::ioctl(display_fd_, POV_IOC_OFF) < 0) {
+        perror("POVDisplay: ioctl off failed");
+        return false;
+    }
+
+    return true;
 }

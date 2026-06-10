@@ -24,6 +24,7 @@ static struct class *dev_class;
 static struct cdev my_cdev;
 static short int mag_irq = 0;
 static ktime_t last_trigger_time;
+static int stable_hall_count = 0; // 給userspace使用，如果cnt > threshold -> 開機，cnt < threshold -> 關機
 // 新增：定義冷卻時間 (Debounce Threshold)。
 // 單位是奈秒 (ns)。5,000,000 ns = 5 毫秒 (ms)
 // 根據馬達的實際最高轉速來微調
@@ -31,10 +32,9 @@ static ktime_t last_trigger_time;
 // #define DEBOUNCE_TIME_NS 1000000000 // 1 sec
 // #define DEBOUNCE_TIME_NS 10000000 // 10 ms
 // #define DEBOUNCE_TIME_NS 80000000 // 20 ms
-#define MIN_VALID_PERIOD_NS 30000000LL  // 30 ms
-#define MAX_VALID_PERIOD_NS 100000000LL  // 100 ms
-// #define MIN_VALID_PERIOD_NS 95000000LL  // 95 ms
-// #define MAX_VALID_PERIOD_NS 135000000LL  // 135 ms
+#define MIN_VALID_PERIOD_NS 25000000LL  // 25 ms
+// #define MAX_VALID_PERIOD_NS 100000000LL  // 100 ms
+#define MAX_VALID_PERIOD_NS 70000000LL  // 70 ms
 
 static int __init mag_driver_init(void);
 static void __exit mag_driver_exit(void);
@@ -70,29 +70,36 @@ static int mag_release(struct inode *inode, struct file *file)
     return 0;
 }
 
+#define HALL_TIMEOUT_NS 500000000LL  // 500 ms，可依轉速調整
+
 static ssize_t mag_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
 {
-    int bytes_to_copy = 1;
-
     uint8_t data_to_send;
-    data_to_send = gpio_get_value(GPIO_DO);
+    ktime_t now;
+    s64 time_since_last_ns;
 
-    // 3. 安全檢查：確保 User Space 給的陣列長度 (len) 夠大，裝得下 2 個 bytes
-    if (len < bytes_to_copy)
-    {
-        pr_err("ERROR: User buffer is too small!\n");
-        return -EINVAL; // 回傳無效參數錯誤
+    if (len < 1) {
+        return -EINVAL;
     }
 
-    // write to user
-    if (copy_to_user(buf, &data_to_send, bytes_to_copy) > 0)
-    {
-        pr_err("ERROR: Not all the bytes have been copied to user\n");
+    now = ktime_get();
+    time_since_last_ns = ktime_to_ns(ktime_sub(now, last_trigger_time));
+
+    /*
+     * 如果太久沒有 Hall 中斷，代表馬達停止或轉速太低。
+     * 這裡一定要把 stable_hall_count 清掉，不然 user space 會誤判仍在旋轉。
+     */
+    if (time_since_last_ns > HALL_TIMEOUT_NS) {
+        stable_hall_count = 0;
     }
 
-    pr_info("Digital vlaue: %d \n", data_to_send);
+    data_to_send = stable_hall_count;
 
-    return bytes_to_copy;
+    if (copy_to_user(buf, &data_to_send, 1)) {
+        return -EFAULT;
+    }
+
+    return 1;
 }
 
 static ssize_t mag_write(struct file *filp, const char __user *buf, size_t len, loff_t *off)
@@ -153,17 +160,23 @@ static irqreturn_t mag_isr(int irq, void *data)
         return IRQ_HANDLED;
     }
 
+    last_trigger_time = now;
+
+
     if (time_diff_ns > MAX_VALID_PERIOD_NS) {
         /*
          * 太久沒收到合理觸發，可能馬達變慢或剛啟動。
          * 這裡先更新 last_trigger_time，但不要 callback，
          * 避免拿異常週期去改 POV timer。
          */
-        last_trigger_time = now;
+        if (stable_hall_count > 0) {
+            stable_hall_count--;
+        }
         return IRQ_HANDLED;
     }
-
-    last_trigger_time = now;
+    if (stable_hall_count < 10) {
+        stable_hall_count++;
+    }
 
     pr_info("Valid Hall trigger, diff = %lld ns\n", time_diff_ns);
 

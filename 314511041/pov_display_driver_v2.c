@@ -8,9 +8,9 @@
 #include <linux/atomic.h>
 #include <linux/delay.h>
 
-#define NUM_LEDS 20
+#define NUM_LEDS 40
 #define END_LEN 4
-#define SPI_BUF_SIZE (4 + (NUM_LEDS * 4) + END_LEN) // Start(4) + LEDs(160) + End(4) = 168 Bytes
+#define SPI_BUF_SIZE (4 + (NUM_LEDS * 4) + END_LEN) // Start(4) + LEDs(80) + End(4) = 88 Bytes
 
 // 驅動狀態與硬體指標
 static struct spi_device *pov_spi_device;
@@ -144,7 +144,7 @@ static int pov_spi_probe(struct spi_device *spi) {
 
     // 啟動 hrtimer (138 微秒 = 138000 奈秒)
     // timer_interval = ktime_set(0, 138000); 
-    timer_interval = ktime_set(0, 10000000); // 5 sec
+    timer_interval = ktime_set(0, 10000000); // 10 ms
     hrtimer_init(&pov_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
     pov_timer.function = &pov_timer_callback;
     hrtimer_start(&pov_timer, timer_interval, HRTIMER_MODE_REL);

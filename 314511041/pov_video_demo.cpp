@@ -3,14 +3,19 @@
 #include <opencv2/opencv.hpp>
 #include <unistd.h>
 #include <cstdio>
+#include <signal.h>
 
 double now_sec(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
 }
-
+static volatile sig_atomic_t g_stop = 0;
+void sigint_handler(int sig) {
+    g_stop = 1;
+}
 int main(int argc, char** argv) {
+    signal(SIGINT, sigint_handler);
     const char* filename = "bad_apple.mp4";
     if (argc > 1) filename = argv[1];
 
@@ -65,10 +70,10 @@ int main(int argc, char** argv) {
     //     if (key == 'q' || key == 27) break;
     // }
 
-    double target_fps = 10.0;
+    double target_fps = 30.0;
     double target_dt = 1.0 / target_fps;
 
-    while (true) {
+    while (!g_stop) {
         double frame_start = now_sec();
 
         // 1. 產生畫面
@@ -99,6 +104,17 @@ int main(int argc, char** argv) {
             usleep((useconds_t)((target_dt - elapsed) * 1000000.0));
         }
     }
+
+    printf("\n收到 Ctrl+C，正在關閉 POV 顯示...\n");
+
+    // 關閉 device fd，這一步很重要
+    pov.closeDevice();
+
+    printf("正在解除 kernel modules...\n");
+
+    // 先不要把錯誤訊息藏掉，方便 debug
+    system("sudo rmmod pov_display_driver_v3 2>/dev/null");
+    system("sudo rmmod magnet_driver 2>/dev/null");
 
     return 0;
 }

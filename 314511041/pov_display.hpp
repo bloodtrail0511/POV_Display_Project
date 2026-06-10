@@ -5,14 +5,16 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <sys/ioctl.h>
 
 class POVDisplay {
 public:
     struct Config {
         std::string device_path = "/dev/pov_display";
+        std::string magnet_path = "/dev/mag_sensor";
         int num_leds = 40;
         int half_leds = 20;
-        int degree_resolution = 120;
+        int degree_resolution = 180;
         int end_len = 5;  // must match kernel driver
         int canvas_size = 800;
         int apa102_brightness = 5;       // 1~31
@@ -30,20 +32,34 @@ public:
     POVDisplay(const POVDisplay&) = delete;
     POVDisplay& operator=(const POVDisplay&) = delete;
 
-    bool isOpen() const { return fd_ >= 0; }
-    bool openDevice();
+    bool isOpen() const { return display_fd_ >= 0; }
+    bool isDisplayOpen() const { return display_fd_ >= 0; }
+    bool isMagnetOpen() const { return mag_fd_ >= 0; }
+
+    bool openDevice();          // open both
+    bool openDisplayDevice();
+    bool openMagnetDevice();
+    
     void closeDevice();
+    void closeDisplayDevice();
+    void closeMagnetDevice();
 
     bool show(const cv::Mat& bgr_canvas);     // convert + write
     bool convert(const cv::Mat& bgr_canvas);  // convert only
     bool flush();                             // write only
     bool saveSampledPreview(const std::string& path);
 
+    uint8_t readHallCount();
+    bool off();
+
     size_t frameSize() const { return frame_.size(); }
 
 private:
     Config cfg_;
-    int fd_ = -1;
+    // int fd_ = -1;
+    int display_fd_ = -1;
+    int mag_fd_ = -1;
+    uint8_t last_hall_count_ = 0;
     int spi_buf_size_ = 0;
     int frame_size_ = 0;
 
