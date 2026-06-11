@@ -8,7 +8,6 @@
 #include <array>
 #include <vector>
 #include <fcntl.h>
-#include <errno.h>
 
 #include <pthread.h>
 #include <queue>
@@ -26,38 +25,23 @@
 #define ON_THRESHOLD   8
 #define OFF_THRESHOLD  5
 
-#define BOOT_ANIM_MS   2000
+#define BOOT_ANIM_MS   5000
 #define LOOP_DELAY_US  16000   // 約 60 FPS
 
 #define CANVAS_SIZE 800
 
-// 開機提醒
-#define READY_BLINK_UNIT_MS 250
-#define READY_BLINK_TOTAL_PHASES 4
-
 static volatile sig_atomic_t g_stop = 0;
-
-#define MAX_PLAYERS 4
-struct PlayerKey {
-    int player_id;
-    int key;
-};
+// static int g_last_key = -1;
 // POSIX Mutex 與共用queue
 static pthread_mutex_t g_key_mutex = PTHREAD_MUTEX_INITIALIZER;
-static std::queue<PlayerKey> g_key_queue;
+static std::queue<int> g_key_queue;
 
 // 實體按鍵的「上半部」中斷旗標
 static volatile sig_atomic_t g_local_btn_flag = 0;
-// static bool g_player_active[MAX_PLAYERS] = {true, false, false, false};
-static bool g_player_active[MAX_PLAYERS] = {false, false, false, false};
 
 static cv::VideoCapture g_video_cap;
-static bool started = false;
 static std::vector<cv::Mat> g_video_thumbnails; // 縮圖
 static bool g_videos_loaded = false;
-static pthread_t g_thumb_tid;
-static volatile sig_atomic_t g_thumb_loading = 0; // 0:未開始, 1:下載中, 2:已完成
-void* preload_thumbnails_thread(void* arg);
 
 int btn_fd = -1; // for button signal
 
@@ -71,12 +55,6 @@ typedef enum {
     STATE_VIDEO_PLAYING,
     STATE_GAME
 } SystemState;
-
-//開機提示
-typedef enum {
-    ANIM_RUNNING,
-    ANIM_DONE
-} AnimResult;
 
 typedef struct {
     POVDisplay* display;    // 控制 POV 顯示 driver 的物件指標
@@ -101,53 +79,18 @@ static long long now_ms()
     ).count();
 }
 
-// ==========================================================
-// Pong 遊戲狀態結構
-// ==========================================================
-struct PongGame {
-    int state; // 0: 等待大廳 (Waiting Room), 1: 遊戲中 (Playing)
-    bool joined[MAX_PLAYERS];
-    float angles[MAX_PLAYERS];
-    int scores[MAX_PLAYERS];
-    cv::Scalar colors[MAX_PLAYERS];
-    
-    float ball_x, ball_y;
-    float ball_vx, ball_vy;
-    int ball_owner;
-    cv::Scalar ball_color;
-    int serve_delay_timer;
-    
-    void reset() {
-        state = 0;
-        for(int i = 0; i < MAX_PLAYERS; i++) {
-            joined[i] = false;
-            scores[i] = 0;
-        }
-        ball_owner = -1;
-        // 分配 4 種玩家專屬顏色 (BGR 格式)
-        colors[0] = cv::Scalar(255, 100, 50);  // P0 (藍)
-        colors[1] = cv::Scalar(50, 50, 255);   // P1 (紅)
-        colors[2] = cv::Scalar(50, 255, 50);   // P2 (綠)
-        colors[3] = cv::Scalar(0, 255, 255);   // P3 (黃)
-    }
-};
-
-static PongGame g_pong;
-static bool g_pong_initialized = false;
-static bool g_btn_left_held[MAX_PLAYERS] = {false};
-static bool g_btn_right_held[MAX_PLAYERS] = {false};
 
 // ==========================================================
 // 按鍵處理
 // ==========================================================
-static void push_network_key(int key, int player_id)
+static void push_network_key(int key)
 {
     pthread_mutex_lock(&g_key_mutex);
-    g_key_queue.push({player_id, key});
+    g_key_queue.push(key);
     pthread_mutex_unlock(&g_key_mutex);
 }
 
-static int consume_key(int* out_player_id = nullptr) {
+static int consume_key() {
     // 1. 下半部 (Bottom-Half)：如果實體按鍵有中斷，去讀取它
     if (g_local_btn_flag) {
         g_local_btn_flag = 0; // 放下旗標
@@ -155,7 +98,7 @@ static int consume_key(int* out_player_id = nullptr) {
         // 把按鍵讀出來塞進 Queue
         if (btn_fd >= 0 && read(btn_fd, &key_code, 1) > 0 && key_code != 0) {
             pthread_mutex_lock(&g_key_mutex);
-            g_key_queue.push({0, key_code});
+            g_key_queue.push(key_code);
             pthread_mutex_unlock(&g_key_mutex);
         }
     }
@@ -164,74 +107,88 @@ static int consume_key(int* out_player_id = nullptr) {
     int result_key = -1;
     pthread_mutex_lock(&g_key_mutex);           // 🔒 上鎖
     if (!g_key_queue.empty()) {
-        PlayerKey ev = g_key_queue.front();       
+        result_key = g_key_queue.front();       // 拿取資料
         g_key_queue.pop();
-        result_key = ev.key;
-        if (out_player_id) *out_player_id = ev.player_id; // 吐出是誰按的
     }
     pthread_mutex_unlock(&g_key_mutex);         // 🔓 解鎖
     return result_key;
 }
 
 static bool is_left_key(int key) {
-    return key == 'a' || key == 2424832 || key == 81 || key == 65361 || (key & 0xFF) == 81 || (key & 0xFFFF) == 65361;
+    return key == 'a' || key == 'A' || key == 2424832 || key == 81 || key == 65361 || (key & 0xFF) == 81 || (key & 0xFFFF) == 65361;
 }
 
 static bool is_right_key(int key) {
-    return key == 'd' || key == 2555904 || key == 83 || key == 65363 || (key & 0xFF) == 83 || (key & 0xFFFF) == 65363;
+    return key == 'd' || key == 'D' || key == 2555904 || key == 83 || key == 65363 || (key & 0xFF) == 83 || (key & 0xFFFF) == 65363;
 }
 
 static bool is_confirm_key(int key) {
-    return key == 'w' || key == 13 || key == 10 || key == 2490368 || key == 82 || key == 65362 || (key & 0xFF) == 13 || (key & 0xFF) == 10 || (key & 0xFFFF) == 65362;
+    return key == 'w' || key == 'W' || key == 13 || key == 10 || key == 2490368 || key == 82 || key == 65362 || (key & 0xFF) == 13 || (key & 0xFF) == 10 || (key & 0xFFFF) == 65362;
 }
 
 static bool is_back_key(int key) {
-    return key == 'b' || key == 8 || key == 2621440 || key == 84 || key == 65364 || (key & 0xFF) == 8 || (key & 0xFFFF) == 65364;
+    return key == 'b' || key == 'B' || key == 8 || key == 2621440 || key == 84 || key == 65364 || (key & 0xFF) == 8 || (key & 0xFFFF) == 65364;
 }
-
-static bool is_left_key_up(int key) { return key == 'A'; }
-static bool is_right_key_up(int key) { return key == 'D'; }
-static bool is_confirm_key_up(int key) { return key == 'W'; }
-static bool is_back_key_up(int key) { return key == 'B'; }
 
 // ==========================================================
 // TCP socket server
 // ==========================================================
-struct ClientArgs {
-    int sock;
-    int player_id;
-};
-void* client_handler(void* arg) {
-    ClientArgs* args = (ClientArgs*)arg;
-    int client_sock = args->sock;
-    int player_id = args->player_id;
-    delete args; // 釋放動態記憶體
+// 單一網路手把連線 (回傳與參數必須為 void*)
+// void* client_handler(void* arg) {
+//     // 將 void* 安全地轉型回 int
+//     int client_sock = (int)(intptr_t)arg; 
     
+//     char buf[16];
+//     printf("[NET] Gamepad connected! FD: %d\n", client_sock);
+    
+//     while (!g_stop) {
+//         int n = recv(client_sock, buf, sizeof(buf), 0);
+//         if (n <= 0) {
+//             printf("[NET] Gamepad disconnected. FD: %d\n", client_sock);
+//             break;
+//         }
+//         for (int i = 0; i < n; i++) {
+//             push_network_key(buf[i]); // 塞入共用佇列
+//         }
+//     }
+//     close(client_sock);
+//     return NULL;
+// }
+void* client_handler(void* arg) {
+    int client_sock = (int)(intptr_t)arg; 
+    char buf[16];
+    
+    // 💡 1. 設定 recv 的 Timeout 時間為 100 毫秒
     struct timeval tv;
     tv.tv_sec = 0;
-    tv.tv_usec = 100000; 
+    tv.tv_usec = 100000; // 100,000 微秒 = 100 毫秒
     setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 
-    printf("[NET] Player %d connected! FD: %d\n", player_id, client_sock);
-    char buf[16];
+    printf("[NET] Gamepad connected! FD: %d\n", client_sock);
     
     while (!g_stop) {
         int n = recv(client_sock, buf, sizeof(buf), 0);
+        
+        // 💡 2. 處理 Timeout 與斷線
         if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue; 
-            else break; 
+            // 如果是 Timeout (EAGAIN 或 EWOULDBLOCK)，代表只是時間到了，沒人按按鍵
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue; // 重新回到 while 檢查 !g_stop
+            } else {
+                printf("[NET] Gamepad error. FD: %d\n", client_sock);
+                break;    // 真正的網路錯誤，跳出迴圈
+            }
         } else if (n == 0) {
-            printf("[NET] Player %d disconnected.\n", player_id);
-            break;
+            printf("[NET] Gamepad disconnected normally. FD: %d\n", client_sock);
+            break;        // 正常斷線
         }
 
+        // 3. 正常收到按鍵資料
         for (int i = 0; i < n; i++) {
-            push_network_key(buf[i], player_id); // 塞入時標記是誰按的
+            push_network_key(buf[i]); 
         }
     }
     
-    // 斷線時釋放這個玩家的空位
-    g_player_active[player_id] = false; 
     close(client_sock);
     return NULL;
 }
@@ -241,39 +198,29 @@ void* socket_server_thread(void* arg) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    
     struct sockaddr_in address;
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(8888);
+    
     bind(server_fd, (struct sockaddr *)&address, sizeof(address));
     listen(server_fd, 5);
-    fcntl(server_fd, F_SETFL, O_NONBLOCK); 
+    fcntl(server_fd, F_SETFL, O_NONBLOCK); // 設為非阻塞
     
     printf("[NET] TCP Server listening on port 8888...\n");
     
     while (!g_stop) {
         int client_sock = accept(server_fd, NULL, NULL);
         if (client_sock >= 0) {
-            // 尋找 1~3 號空位給新連線的手把
-            int slot = -1;
-            for (int i = 1; i < MAX_PLAYERS; i++) {
-                if (!g_player_active[i]) {
-                    g_player_active[i] = true;
-                    slot = i;
-                    break;
-                }
-            }
-            if (slot != -1) {
-                ClientArgs* args = new ClientArgs{client_sock, slot};
-                pthread_t client_tid;
-                pthread_create(&client_tid, NULL, client_handler, args);
-                pthread_detach(client_tid); 
-            } else {
-                printf("[NET] Server full, rejecting.\n");
-                close(client_sock);
-            }
+            // 有新手把連入，開一個新的 pthread 專門服務它
+            pthread_t client_tid;
+            pthread_create(&client_tid, NULL, client_handler, (void*)(intptr_t)client_sock);
+            
+            // 呼叫 detach：讓 OS 知道這支執行緒結束後自動回收資源
+            pthread_detach(client_tid); 
         }
-        usleep(100000); 
+        usleep(100000); // 休息 100ms
     }
     close(server_fd);
     return NULL;
@@ -289,66 +236,35 @@ static cv::Mat make_black_canvas(POVDisplay* display)
     return cv::Mat::zeros(CANVAS_SIZE, CANVAS_SIZE, CV_8UC3);
 }
 
-static cv::Mat make_ready_outer_ring_canvas()
+static cv::Mat make_white_canvas()
 {
+    return cv::Mat(CANVAS_SIZE, CANVAS_SIZE, CV_8UC3, cv::Scalar(255, 255, 255));
+}
+
+static cv::Mat make_boot_green_canvas(double ratio)
+{
+    int center = CANVAS_SIZE / 2;
+
+    if (ratio < 0.0) ratio = 0.0;
+    if (ratio > 1.0) ratio = 1.0;
+
     cv::Mat canvas = cv::Mat::zeros(CANVAS_SIZE, CANVAS_SIZE, CV_8UC3);
 
-    int center = CANVAS_SIZE / 2;
-    int radius = static_cast<int>(CANVAS_SIZE * 0.48);
+    int min_radius = 8;
+    int max_radius = center;
+    int radius = min_radius + static_cast<int>((max_radius - min_radius) * ratio);
 
-    // 外圈綠色，代表 ready
+    // OpenCV 是 BGR，所以綠色是 (0, 255, 0)
     cv::circle(
         canvas,
         cv::Point(center, center),
         radius,
-        cv::Scalar(0, 100, 0),
-        35,
+        cv::Scalar(0, 255, 0),
+        -1,
         cv::LINE_AA
     );
 
     return canvas;
-}
-
-static AnimResult ready_blink_animation(AppContext* ctx)
-{
-    static bool anim_started = false;
-    static bool anim_done = false;
-    static long long start_time_ms = 0;
-
-    if (anim_done) {
-        return ANIM_DONE;
-    }
-
-    if (!anim_started) {
-        anim_started = true;
-        start_time_ms = now_ms();
-        printf("[STARTUP] ready blink animation start\n");
-    }
-
-    long long elapsed = now_ms() - start_time_ms;
-    int phase = elapsed / READY_BLINK_UNIT_MS;
-
-    if (phase >= READY_BLINK_TOTAL_PHASES) {
-        anim_done = true;
-
-        ctx->render_canvas = make_black_canvas(ctx->display);
-        ctx->need_render = 1;
-
-        printf("[STARTUP] ready blink animation done\n");
-        return ANIM_DONE;
-    }
-
-    bool green_on = (phase == 0 || phase == 2);
-
-    if (green_on) {
-        ctx->render_canvas = make_ready_outer_ring_canvas();
-    } else {
-        ctx->render_canvas = make_black_canvas(ctx->display);
-    }
-
-    ctx->need_render = 1;
-
-    return ANIM_RUNNING;
 }
 
 static cv::Mat make_boot_sweep_canvas(const AppContext* ctx, double ratio)
@@ -399,7 +315,8 @@ static cv::Mat make_boot_shutter_canvas(const AppContext* ctx, double ratio)
 
     // 3. 計算目前的圓孔半徑 (加入 Ease-Out 讓放大有「煞車」的平滑感)
     double ease_ratio = 1.0 - pow(1.0 - ratio, 3); 
-    int max_radius = static_cast<int>(CANVAS_SIZE * 0.5); 
+    // 最大半徑要乘上 0.7 左右，確保對角線也能完全展開
+    int max_radius = static_cast<int>(CANVAS_SIZE * 0.75); 
     int current_radius = static_cast<int>(max_radius * ease_ratio);
 
     // 4. 在遮罩上畫出實心白圓 (挖洞)
@@ -604,29 +521,8 @@ static cv::Mat draw_clock_canvas(const AppContext* ctx) {
     return canvas;
 }
 
-SystemState idle_handler(AppContext* ctx)
-{
-    /*
-     * 第一次進入 IDLE 時，先播放 ready blink。
-     * animation 還在跑時，不執行 off()，也不判斷 Hall。
-     */
-    if (ready_blink_animation(ctx) == ANIM_RUNNING) {
-        return STATE_IDLE;
-    }
-    ctx->menu_index = 0;
-
-    /*
-     * ready blink 播完後，才是真正的 IDLE。
-     */
+SystemState idle_handler(AppContext* ctx){
     ctx->display->off();
-
-    if (!started) {
-        if (g_thumb_loading == 0) {
-            g_thumb_loading = 1;
-            pthread_create(&g_thumb_tid, NULL, preload_thumbnails_thread, NULL);
-            pthread_detach(g_thumb_tid);
-        }
-    }
 
     if (ctx->stable_hall_count >= ON_THRESHOLD) {
         printf("[FSM] IDLE -> BOOT_ANIM, hall_count = %u\n",
@@ -638,6 +534,7 @@ SystemState idle_handler(AppContext* ctx)
 }
 
 SystemState boot_anim_handler(AppContext* ctx){
+    static bool started = false;
     static long long start_time_ms = 0;
 
     if (!started) {
@@ -796,38 +693,6 @@ static void ensure_videos_loaded() {
     
     g_videos_loaded = true;
     printf("[VIDEO] All thumbnails loaded! Total: %zu videos.\n", g_video_thumbnails.size());
-}
-
-void* preload_thumbnails_thread(void* arg) {
-    if (g_videos_loaded) return NULL;
-    
-    printf("[ASYNC VIDEO] Background thumbnail loading started...\n");
-    std::vector<cv::String> video_files;
-    cv::glob("assets/video/*.mp4", video_files, false);
-    
-    if (!video_files.empty()) {
-        std::sort(video_files.begin(), video_files.end());
-        for (const auto& path : video_files) {
-            // 如果主程式準備結束，提早退出執行緒
-            if (g_stop) break; 
-            
-            cv::Mat thumb = get_video_thumbnail(path);
-            if (!thumb.empty()) {
-                // 🔒 注意：因為 g_video_thumbnails 會在 main 執行緒被讀取，
-                // 這裡安全起見用已經存在的 g_key_mutex 或是獨立 mutex 保護
-                pthread_mutex_lock(&g_key_mutex);
-                g_video_thumbnails.push_back(thumb);
-                pthread_mutex_unlock(&g_key_mutex);
-            }
-            // 微小延遲，避免搶佔過多 CPU 資源影響開機動畫
-            usleep(10000); 
-        }
-    }
-    
-    g_videos_loaded = true;
-    g_thumb_loading = 2; // 標記完成
-    printf("[ASYNC VIDEO] All thumbnails preloaded in background! Total: %zu\n", g_video_thumbnails.size());
-    return NULL;
 }
 
 static cv::Mat draw_video_menu_canvas(const AppContext* ctx)
@@ -995,285 +860,9 @@ SystemState video_playing_handler(AppContext* ctx){
     return STATE_VIDEO_PLAYING;
 }
 
-static cv::Mat draw_game_canvas(const AppContext* ctx) {
-    cv::Mat canvas = cv::Mat::zeros(CANVAS_SIZE, CANVAS_SIZE, CV_8UC3);
+SystemState game_handler(AppContext* ctx){
 
-    // 1. 定義場地與尺寸參數
-    float center_x = CANVAS_SIZE / 2.0f;
-    float center_y = CANVAS_SIZE / 2.0f;
-    int r_step = CANVAS_SIZE / 2 / 10;
-    int arena_radius = center_x - r_step;
-    int ball_radius = r_step * 0.8;
-    float paddle_size = 25.0;
-
-    // 計算目前有幾個人加入
-    int active_joined_count = 0;
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (g_pong.joined[i]) active_joined_count++;
-    }
-
-    // ==========================================
-    // 2. 物理引擎運算區塊 (從 Handler 搬過來的)
-    // ==========================================
-    if (g_pong.state == 1) {
-        if (g_pong.serve_delay_timer > 0) {
-            g_pong.serve_delay_timer--;
-            if (g_pong.serve_delay_timer == 0) {
-                // // 發球
-                // float serve_angle = (rand() % 360) * M_PI / 180.0;
-                // float serve_speed = 9.0;
-                // g_pong.ball_vx = serve_speed * cos(serve_angle);
-                // g_pong.ball_vy = serve_speed * sin(serve_angle);
-                // 發球：隨機發到某一個已加入玩家的板子正中間
-                std::vector<int> joined_players;
-
-                for (int i = 0; i < MAX_PLAYERS; i++) {
-                    if (g_pong.joined[i]) {
-                        joined_players.push_back(i);
-                    }
-                }
-
-                if (!joined_players.empty()) {
-                    int target_player = joined_players[rand() % joined_players.size()];
-
-                    // 板子的正中間角度
-                    float serve_angle_deg = g_pong.angles[target_player];
-                    float serve_angle = serve_angle_deg * M_PI / 180.0f;
-
-                    float serve_speed = 9.0f;
-
-                    // 往該板子的方向發球
-                    g_pong.ball_vx = serve_speed * cos(serve_angle);
-                    g_pong.ball_vy = serve_speed * sin(serve_angle);
-
-                    // 避免一發出去馬上因為 ball_owner 判斷造成不能接
-                    g_pong.ball_owner = -1;
-
-                    printf("[PONG] Serve to player %d center, angle = %.1f\n",
-                        target_player, serve_angle_deg);
-                }
-            }
-        } else {
-            g_pong.ball_x += g_pong.ball_vx;
-            g_pong.ball_y += g_pong.ball_vy;
-        }
-
-        float dx = g_pong.ball_x - center_x;
-        float dy = g_pong.ball_y - center_y;
-        float distance = sqrt(dx*dx + dy*dy);
-
-        // 如果球撞到邊界
-        if (distance + ball_radius > arena_radius) {
-            float ball_angle_rad = atan2(dy, dx);
-            float ball_angle_deg = ball_angle_rad * 180.0 / M_PI;
-            if (ball_angle_deg < 0) ball_angle_deg += 360.0;
-
-            auto get_angle_diff = [](float a1, float a2) {
-                float diff = fmod(fabs(a1 - a2), 360.0);
-                return diff > 180.0 ? 360.0 - diff : diff;
-            };
-
-            float hit_tolerance = paddle_size + 5.0;
-            bool hit_someone = false;
-            int hit_player_id = -1;
-
-            // 檢查是誰擋下了球
-            for(int i = 0; i < MAX_PLAYERS; i++) {
-                if (g_pong.joined[i]) {
-                    float diff = get_angle_diff(ball_angle_deg, g_pong.angles[i]);
-                    if (diff <= hit_tolerance && g_pong.ball_owner != i) {
-                        hit_someone = true;
-                        hit_player_id = i;
-                        break;
-                    }
-                }
-            }
-
-            if (hit_someone) {
-                // 成功反彈、加速與染色
-                g_pong.ball_owner = hit_player_id;
-                g_pong.ball_color = g_pong.colors[hit_player_id];
-                
-                float overlap = (distance + ball_radius) - arena_radius;
-                g_pong.ball_x -= (dx / distance) * overlap;
-                g_pong.ball_y -= (dy / distance) * overlap;
-
-                float nx = dx / distance;
-                float ny = dy / distance;
-
-                // 1. 標準反射
-                float dot_product = (g_pong.ball_vx * nx) + (g_pong.ball_vy * ny);
-                g_pong.ball_vx -= (2 * dot_product * nx);
-                g_pong.ball_vy -= (2 * dot_product * ny);
-
-                // 2. 加入切線方向，避免球每次反彈都穿過圓心
-                float tx = -ny;
-                float ty = nx;
-
-                // 取得這個玩家板子的移動方向
-                float paddle_v = 0.0f;
-                if (g_btn_left_held[hit_player_id]) {
-                    paddle_v = -1.0f;
-                } else if (g_btn_right_held[hit_player_id]) {
-                    paddle_v = 1.0f;
-                }
-
-                // 切球強度：越大越不容易穿過圓心
-                float english_strength = 3.0f;
-                g_pong.ball_vx += tx * paddle_v * english_strength;
-                g_pong.ball_vy += ty * paddle_v * english_strength;
-
-                // 3. 即使板子沒動，也給一點隨機切線偏移
-                float random_tangent = ((rand() % 100) / 100.0f - 0.5f) * 2.5f;
-                g_pong.ball_vx += tx * random_tangent;
-                g_pong.ball_vy += ty * random_tangent;
-
-                // 4. 加速
-                g_pong.ball_vx *= 1.05f;
-                g_pong.ball_vy *= 1.05f;
-
-                // 5. 限制最高速度，避免越來越快
-                float max_speed = r_step * 1.5f;
-                float speed = sqrt(g_pong.ball_vx * g_pong.ball_vx + g_pong.ball_vy * g_pong.ball_vy);
-                if (speed > max_speed) {
-                    g_pong.ball_vx *= max_speed / speed;
-                    g_pong.ball_vy *= max_speed / speed;
-                }
-            } else {
-                // 漏接得分，回到中心準備重新發球
-                if (g_pong.ball_owner != -1) {
-                    g_pong.scores[g_pong.ball_owner]++;
-                }
-                g_pong.ball_x = center_x;
-                g_pong.ball_y = center_y;
-                g_pong.ball_owner = -1;
-                g_pong.ball_color = cv::Scalar(255, 255, 255);
-                g_pong.serve_delay_timer = 60;
-                g_pong.ball_vx = 0;
-                g_pong.ball_vy = 0;
-            }
-        }
-    }
-
-    // ==========================================
-    // 3. 畫面繪圖區塊
-    // ==========================================
-    cv::circle(canvas, cv::Point(center_x, center_y), arena_radius, cv::Scalar(30, 30, 30), 40, cv::LINE_AA);
-
-    // 畫出所有已加入玩家的板子
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (g_pong.joined[i]) {
-            cv::ellipse(canvas, cv::Point(center_x, center_y), cv::Size(arena_radius, arena_radius),
-                        0, g_pong.angles[i] - paddle_size, g_pong.angles[i] + paddle_size, 
-                        g_pong.colors[i], 40, cv::LINE_AA);
-        }
-    }
-
-    if (g_pong.state == 0) {
-        // 大廳文字提示
-        draw_centered_text(canvas, "PONG", cv::Point(center_x, center_y - 80), 3.0, 5, cv::Scalar(255, 255, 255));
-        
-        char buf[64];
-        snprintf(buf, sizeof(buf), "JOINED: %d", active_joined_count);
-        draw_centered_text(canvas, buf, cv::Point(center_x, center_y), 1.5, 2, cv::Scalar(200, 200, 200));
-
-        // if (active_joined_count >= 2) {
-        //     draw_centered_text(canvas, "PRESS CONFIRM", cv::Point(center_x, center_y + 80), 1.2, 2, cv::Scalar(0, 255, 0));
-        // } else {
-        //     draw_centered_text(canvas, "WAITING PLAYERS...", cv::Point(center_x, center_y + 80), 1.2, 2, cv::Scalar(100, 100, 100));
-        // }
-    } else {
-        // 畫出球
-        cv::circle(canvas, cv::Point(g_pong.ball_x, g_pong.ball_y), ball_radius, g_pong.ball_color, -1, cv::LINE_AA);
-    }
-
-    return canvas;
-}
-
-SystemState game_handler(AppContext* ctx) {
-    // 1. 硬體防護：風扇停轉就強制離開
-    if (ctx->stable_hall_count <= OFF_THRESHOLD) {
-        g_pong_initialized = false;
-        return STATE_IDLE;
-    }
-
-    if (!g_pong_initialized) {
-        g_pong.reset();
-        g_pong_initialized = true;
-        // 清空所有人的按鍵狀態
-        memset(g_btn_left_held, 0, sizeof(g_btn_left_held));
-        memset(g_btn_right_held, 0, sizeof(g_btn_right_held));
-        printf("[PONG] 進入遊戲等待大廳...\n");
-    }
-
-    // 2. 自動同步連線狀態
-    int active_joined_count = 0;
-    for(int i = 0; i < MAX_PLAYERS; i++) {
-        if (g_player_active[i] && !g_pong.joined[i]) {
-            g_pong.angles[i] = i * 90.0f; // 給新加入的玩家一個預設位置
-        }
-        g_pong.joined[i] = g_player_active[i]; 
-        if (g_pong.joined[i]) active_joined_count++;
-    }
-    
-    if (g_pong.state == 1 && active_joined_count < 2) {
-        printf("[PONG] 玩家不足 2 人，退回大廳！\n");
-        g_pong.state = 0; 
-    }
-
-    // ==========================================
-    // 3. 輸入處理層 (只更新狀態，不負責移動)
-    // ==========================================
-    int player_id;
-    int key;
-    while ((key = consume_key(&player_id)) != -1) {
-        if (is_back_key(key)) { 
-            g_pong_initialized = false;
-            return STATE_MAIN_MENU;
-        }
-
-        // player 0 是 server，只允許返回，不允許控制遊戲
-        if (player_id == 0) {continue;}
-
-        // 更新這個玩家的「按住/放開」狀態
-        if (is_left_key(key))  g_btn_left_held[player_id] = true;
-        if (is_right_key(key)) g_btn_right_held[player_id] = true;
-        if (is_left_key_up(key))  g_btn_left_held[player_id] = false;
-        if (is_right_key_up(key)) g_btn_right_held[player_id] = false;
-
-        // 大廳專屬邏輯：開始遊戲
-        if (g_pong.state == 0) {
-            if (is_confirm_key(key) && active_joined_count >= 2) {
-                printf("[PONG] 遊戲開始！(%d 人)\n", active_joined_count);
-                g_pong.state = 1;
-                g_pong.ball_x = CANVAS_SIZE / 2.0f;
-                g_pong.ball_y = CANVAS_SIZE / 2.0f;
-                g_pong.serve_delay_timer = 60; 
-                g_pong.ball_owner = -1;
-                g_pong.ball_color = cv::Scalar(255, 255, 255);
-            }
-        }
-    }
-
-    // ==========================================
-    // 4. 運動與物理層 (每秒執行 60 次)
-    // ==========================================
-    // 💡 平滑移動邏輯：只要狀態是 true，每一幀都勻速移動！
-    float smooth_speed = 3.5f; // 每一幀轉 3.5 度 (你可以調整這個速度)
-    
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (g_pong.joined[i]) {
-            if (g_btn_left_held[i])  g_pong.angles[i] -= smooth_speed;
-            if (g_btn_right_held[i]) g_pong.angles[i] += smooth_speed;
-            g_pong.angles[i] = fmod(g_pong.angles[i] + 360.0, 360.0);
-        }
-    }
-
-    // 呼叫包含球體物理碰撞與畫圖的函式
-    ctx->render_canvas = draw_game_canvas(ctx);
-    ctx->need_render = 1;
-
-    return STATE_GAME;
+    return STATE_MAIN_MENU;
 }
 
 typedef SystemState (*StateHandler)(AppContext* ctx);
