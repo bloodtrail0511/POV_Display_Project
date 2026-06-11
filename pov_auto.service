@@ -1,0 +1,21 @@
+[Unit]
+Description=POV Fast Auto Start
+# 只要 NetworkManager 啟動了，我們就開始做事，不等網路連通！
+After=NetworkManager.service
+
+[Service]
+Type=simple
+# 手把端填 start_client.sh；伺服器端填 start_server.sh
+ExecStart=/home/rtes/start_client.sh
+WorkingDirectory=/home/rtes
+
+# 如果程式當掉或斷線退出，5秒後自動重新執行腳本
+Restart=always
+RestartSec=5
+
+# 將輸出寫入系統 Log，方便我們 Debug
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

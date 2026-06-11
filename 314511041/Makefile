@@ -12,7 +12,7 @@ ARCH = arm64
 CROSS_COMPILE = aarch64-linux-gnu-
 
 # all: driver reader spi_dts
-all: driver reader spi_dts tester
+all: driver reader spi_dts tester controller
 
 driver:
 	make ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -C $(KDIR) M=$(shell pwd) modules
@@ -22,6 +22,9 @@ driver:
 
 reader:
 	$(CROSS_COMPILE)gcc -o magnet_reader magnet_reader.c
+
+controller:
+	$(CROSS_COMPILE)gcc -o controller_client controller_client.cpp
 
 spi_dts:
 	dtc -@ -I dts -O dtb -o pov_apa102.dtbo pov_apa102.dts
