@@ -1,0 +1,17 @@
+build/
+build_menu_local.ps1
+run_menu_local.ps1
+$null
+*.dll
+*.pdb
+*.ilk
+.vscode/
+
+# Build outputs
+app_clock_v1
+app_pong_sim
+app_vid
+menu
+menu_v2
+app_pong_multi
+pong_client

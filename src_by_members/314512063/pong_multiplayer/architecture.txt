@@ -1,0 +1,37 @@
+Pong Game
+|
+|-- app_pong_multi.cpp
+|   |
+|   |-- main game loop
+|   |-- OpenCV 畫面
+|   |-- Pong 物理
+|   |-- P1 / P2 本機擋板
+|   |-- P3 / P4 網路擋板
+|   |-- POV simulator
+|   |-- include "net_server.hpp"
+|
+|-- net_server.hpp
+|   |
+|   |-- NetPlayerInput 結構宣告
+|   |-- net_players[] 宣告
+|   |-- 最多 2 位外部玩家
+|   |-- start_network_server()
+|   |-- stop_network_server()
+|
+|-- net_server.cpp
+|   |
+|   |-- TCP socket server
+|   |-- bind() / listen()
+|   |-- accept thread
+|   |-- client thread
+|   |-- P3 / P4 玩家分配
+|   |-- atomic input state
+|   |-- mutex player allocation
+|
+|-- pong_client.cpp
+|   |
+|   |-- 玩家端程式
+|   |-- 連線到 server IP
+|   |-- 上下鍵控制
+|   |-- 傳送 UP / DOWN / QUIT
+
